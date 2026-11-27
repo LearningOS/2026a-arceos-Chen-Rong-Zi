@@ -55,7 +55,61 @@ extern crate alloc;
 
 #[cfg(feature = "alloc")]
 #[doc(no_inline)]
-pub use alloc::{boxed, collections, format, string, vec};
+pub use alloc::{boxed, format, string, vec};
+
+#[cfg(feature = "alloc")]
+pub mod collections {
+    pub use alloc::collections::*;
+
+    use alloc::vec::Vec;
+    use core::hash::{Hash, Hasher};
+
+    pub struct HashMap<K, V> {
+        buckets: BTreeMap<u64, Vec<(K, V)>>,
+    }
+
+    impl<K: Hash + Eq, V> HashMap<K, V> {
+        pub fn new() -> Self {
+            Self {
+                buckets: BTreeMap::new(),
+            }
+        }
+
+        pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+            let mut hasher = FnvHasher(0xcbf29ce484222325);
+            key.hash(&mut hasher);
+            let bucket = self.buckets.entry(hasher.finish()).or_default();
+            for (stored_key, stored_value) in bucket.iter_mut() {
+                if stored_key == &key {
+                    return Some(core::mem::replace(stored_value, value));
+                }
+            }
+            bucket.push((key, value));
+            None
+        }
+
+        pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+            self.buckets
+                .values()
+                .flat_map(|bucket| bucket.iter().map(|(key, value)| (key, value)))
+        }
+    }
+
+    struct FnvHasher(u64);
+
+    impl Hasher for FnvHasher {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            for &byte in bytes {
+                self.0 ^= u64::from(byte);
+                self.0 = self.0.wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+}
 
 #[doc(no_inline)]
 pub use core::{arch, cell, cmp, hint, marker, mem, ops, ptr, slice, str};

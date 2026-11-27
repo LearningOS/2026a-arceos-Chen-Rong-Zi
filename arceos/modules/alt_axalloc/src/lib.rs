@@ -36,8 +36,8 @@ impl GlobalAllocator {
     }
 
     /// Add the given region to the allocator.
-    pub fn add_memory(&self, _start_vaddr: usize, _size: usize) -> AllocResult {
-        unimplemented!()
+    pub fn add_memory(&self, start_vaddr: usize, size: usize) -> AllocResult {
+        self.inner.lock().add_memory(start_vaddr, size)
     }
 
     /// Allocate arbitrary number of bytes. Returns the left bound of the
@@ -110,12 +110,12 @@ pub fn global_init(start_vaddr: usize, size: usize) {
     debug!(
         "initialize global allocator at: [{:#x}, {:#x})",
         start_vaddr,
-        start_vaddr + size
+        start_vaddr.saturating_add(size)
     );
     GLOBAL_ALLOCATOR.init(start_vaddr, size);
 }
 
 /// Add the given memory region to the global allocator.
-pub fn global_add_memory(_start_vaddr: usize, _size: usize) -> AllocResult {
-    unimplemented!()
+pub fn global_add_memory(start_vaddr: usize, size: usize) -> AllocResult {
+    GLOBAL_ALLOCATOR.add_memory(start_vaddr, size)
 }

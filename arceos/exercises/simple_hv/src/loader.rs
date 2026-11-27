@@ -22,7 +22,7 @@ pub fn load_vm_image(fname: &str, uspace: &mut AddrSpace) -> io::Result<()> {
         core::ptr::copy_nonoverlapping(
             buf.as_ptr(),
             phys_to_virt(paddr).as_mut_ptr(),
-            PAGE_SIZE_4K,
+            buf.len(),
         );
     }
 

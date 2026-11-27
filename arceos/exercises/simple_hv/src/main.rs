@@ -24,10 +24,15 @@ use csrs::{RiscvCsrTrait, CSR};
 use vcpu::_run_guest;
 use sbi::SbiMessage;
 use loader::load_vm_image;
-use axhal::mem::PhysAddr;
-use crate::regs::GprIndex::{A0, A1};
+use axhal::mem::{PhysAddr, PAGE_SIZE_4K};
+use axhal::paging::MappingFlags;
+use axmm::AddrSpace;
+use crate::regs::GprIndex::{self, A0, A1};
 
 const VM_ENTRY: usize = 0x8020_0000;
+const VIRTUAL_HART_ID: usize = 0x1234;
+const DEVICE_ADDR: usize = 0x40;
+const DEVICE_VALUE: u64 = 0x6688;
 
 #[cfg_attr(feature = "axstd", no_mangle)]
 fn main() {
@@ -50,10 +55,10 @@ fn main() {
     prepare_vm_pgtable(ept_root);
 
     // Kick off vm and wait for it to exit.
-    while !run_guest(&mut ctx) {
+    while !run_guest(&mut ctx, &mut uspace) {
     }
 
-    panic!("Hypervisor ok!");
+    ax_println!("Hypervisor ok!");
 }
 
 fn prepare_vm_pgtable(ept_root: PhysAddr) {
@@ -67,16 +72,15 @@ fn prepare_vm_pgtable(ept_root: PhysAddr) {
     }
 }
 
-fn run_guest(ctx: &mut VmCpuRegisters) -> bool {
+fn run_guest(ctx: &mut VmCpuRegisters, aspace: &mut AddrSpace) -> bool {
     unsafe {
         _run_guest(ctx);
     }
 
-    vmexit_handler(ctx)
+    vmexit_handler(ctx, aspace)
 }
 
-#[allow(unreachable_code)]
-fn vmexit_handler(ctx: &mut VmCpuRegisters) -> bool {
+fn vmexit_handler(ctx: &mut VmCpuRegisters, aspace: &mut AddrSpace) -> bool {
     use scause::{Exception, Trap};
 
     let scause = scause::read();
@@ -102,16 +106,47 @@ fn vmexit_handler(ctx: &mut VmCpuRegisters) -> bool {
             }
         },
         Trap::Exception(Exception::IllegalInstruction) => {
-            panic!("Bad instruction: {:#x} sepc: {:#x}",
-                stval::read(),
-                ctx.guest_regs.sepc
-            );
+            let mut instruction = stval::read();
+            if instruction == 0 {
+                let mut bytes = [0; 4];
+                aspace
+                    .read(ctx.guest_regs.sepc.into(), &mut bytes)
+                    .expect("cannot fetch guest instruction");
+                instruction = u32::from_le_bytes(bytes) as usize;
+            }
+            if instruction & 0xffff_f07f != 0xf140_2073 {
+                panic!(
+                    "Bad instruction: {:#x} sepc: {:#x}",
+                    instruction, ctx.guest_regs.sepc
+                );
+            }
+            let rd = GprIndex::from_raw(((instruction >> 7) & 0x1f) as u32)
+                .expect("5-bit register index is valid");
+            ctx.guest_regs.gprs.set_reg(rd, VIRTUAL_HART_ID);
+            ctx.guest_regs.sepc += 4;
         },
         Trap::Exception(Exception::LoadGuestPageFault) => {
-            panic!("LoadGuestPageFault: stval{:#x} sepc: {:#x}",
-                stval::read(),
-                ctx.guest_regs.sepc
-            );
+            let guest_paddr = (riscv::register::htval::read() << 2) | (stval::read() & 3);
+            if guest_paddr != DEVICE_ADDR {
+                panic!(
+                    "LoadGuestPageFault: stval{:#x} sepc: {:#x}",
+                    stval::read(),
+                    ctx.guest_regs.sepc
+                );
+            }
+            aspace
+                .map_alloc(
+                    (DEVICE_ADDR & !(PAGE_SIZE_4K - 1)).into(),
+                    PAGE_SIZE_4K,
+                    MappingFlags::READ | MappingFlags::USER,
+                    true,
+                )
+                .expect("cannot map guest device");
+            aspace
+                .write(DEVICE_ADDR.into(), &DEVICE_VALUE.to_le_bytes())
+                .expect("cannot initialize guest device");
+            // SAFETY: the hypervisor runs in HS mode with the H extension enabled.
+            unsafe { core::arch::riscv64::hfence_gvma_all() };
         },
         _ => {
             panic!(

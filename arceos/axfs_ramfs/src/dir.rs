@@ -165,6 +165,41 @@ impl VfsNodeOps for DirNode {
         }
     }
 
+    fn rename(&self, src_path: &str, dst_path: &str) -> VfsResult {
+        let (src_dir, src_name) = src_path.rsplit_once('/').unwrap_or(("", src_path));
+        let (dst_dir, dst_name) = dst_path.rsplit_once('/').unwrap_or(("", dst_path));
+        if ["", ".", ".."].contains(&src_name) || ["", ".", ".."].contains(&dst_name) {
+            return Err(VfsError::InvalidInput);
+        }
+
+        let this = self.this.upgrade().ok_or(VfsError::NotFound)?;
+        let src_dir = this.clone().lookup(src_dir)?;
+        let dst_dir = this.lookup(dst_dir)?;
+        if !Arc::ptr_eq(&src_dir, &dst_dir) {
+            return Err(VfsError::Unsupported);
+        }
+        let dir = src_dir
+            .as_any()
+            .downcast_ref::<Self>()
+            .ok_or(VfsError::NotADirectory)?;
+        let mut children = dir.children.write();
+        let node = children.get(src_name).ok_or(VfsError::NotFound)?;
+        if src_name == dst_name {
+            return Ok(());
+        }
+        if let Some(dst_node) = children.get(dst_name) {
+            if dst_node.get_attr()?.is_dir() {
+                return Err(VfsError::IsADirectory);
+            }
+            if node.get_attr()?.is_dir() {
+                return Err(VfsError::NotADirectory);
+            }
+        }
+        let node = children.remove(src_name).ok_or(VfsError::NotFound)?;
+        children.insert(dst_name.into(), node);
+        Ok(())
+    }
+
     axfs_vfs::impl_vfs_dir_default! {}
 }
 
